@@ -6,6 +6,7 @@ using System.Threading;
 using JetBrains.Annotations;
 using NetMQ.Sockets;
 using System.Runtime.InteropServices;
+using System.Runtime.Serialization;
 
 namespace NetMQ
 {
@@ -235,8 +236,6 @@ namespace NetMQ
                     case NetMQActor.EndShimMessage:
                         m_poller.Stop();
                         break;
-                    default:
-                        throw new ArgumentOutOfRangeException();
                 }
             }
 
@@ -246,15 +245,7 @@ namespace NetMQ
                 {
                     m_udpSocket.SendTo(frame.Buffer, 0, frame.MessageSize, SocketFlags.None, m_broadcastAddress);
                 }
-                catch (SocketException ex)
-                {
-                    if (ex.SocketErrorCode != SocketError.AddressNotAvailable) { throw; }
-
-                    // Initiate Creation of new Udp here to solve issue related to 'sudden' network change.
-                    // On windows (7 OR 10) incorrect/previous ip address might still exist instead of new Ip 
-                    // due to network change which causes crash (if no try/catch and keep trying to send to incorrect/not available address.
-                    // This approach would solve the issue...
-                }
+                catch { /*Ignore*/ }
             }
 
             private NetMQFrame ReceiveUdpFrame(out string peerName)

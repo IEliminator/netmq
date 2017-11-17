@@ -21,6 +21,7 @@
 
 using System.Diagnostics;
 using System.Net.Sockets;
+using System.Runtime.Serialization;
 using JetBrains.Annotations;
 using NetMQ.Core.Utils;
 
@@ -205,31 +206,37 @@ namespace NetMQ.Core
         /// <param name="command"></param>
         public bool TryRecv(int timeout, out Command command)
         {
-            // Try to get the command straight away.
-            if (m_active)
+            command = default(Command);
+            try
             {
-                if (m_commandPipe.TryRead(out command))
-                    return true;
+                // Try to get the command straight away.
+                if (m_active)
+                {
+                    if (m_commandPipe.TryRead(out command))
+                        return true;
 
-                // If there are no more commands available, switch into passive state.
-                m_active = false;
-                m_signaler.Recv();
+                    // If there are no more commands available, switch into passive state.
+                    m_active = false;
+                    m_signaler.Recv();
+                }
+
+                // Wait for signal from the command sender.
+                if (!m_signaler.WaitEvent(timeout))
+                {
+                    command = default(Command);
+                    return false;
+                }
+
+                // We've got the signal. Now we can switch into active state.
+                m_active = true;
+
+                // Get a command.
+                var ok = m_commandPipe.TryRead(out command);
+                Debug.Assert(ok);
+                return ok;
             }
-
-            // Wait for signal from the command sender.
-            if (!m_signaler.WaitEvent(timeout))
-            {
-                command = default(Command);
-                return false;
-            }
-
-            // We've got the signal. Now we can switch into active state.
-            m_active = true;
-
-            // Get a command.
-            var ok = m_commandPipe.TryRead(out command);
-            Debug.Assert(ok);
-            return ok;
+            catch (SocketException) { /*Ignore*/ }
+            return false;
         }
 
         /// <summary>
