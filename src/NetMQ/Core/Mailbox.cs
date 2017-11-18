@@ -19,6 +19,7 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+using System;
 using System.Diagnostics;
 using System.Net.Sockets;
 using System.Runtime.Serialization;
@@ -212,12 +213,21 @@ namespace NetMQ.Core
                 // Try to get the command straight away.
                 if (m_active)
                 {
-                    if (m_commandPipe.TryRead(out command))
-                        return true;
+
+                    try
+                    {
+                        if (m_commandPipe.TryRead(out command))
+                            return true;
+                    }
+                    catch (SocketException) { /*Ignore*/ }
 
                     // If there are no more commands available, switch into passive state.
                     m_active = false;
-                    m_signaler.Recv();
+                    try
+                    {
+                        m_signaler.Recv();
+                    }
+                    catch (SocketException){ /*Ignore*/ }
                 }
 
                 // Wait for signal from the command sender.
@@ -235,7 +245,7 @@ namespace NetMQ.Core
                 Debug.Assert(ok);
                 return ok;
             }
-            catch (SocketException) { /*Ignore*/ }
+            catch (Exception) { /*Ignore*/ }
             return false;
         }
 
