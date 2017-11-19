@@ -53,8 +53,14 @@ namespace NetMQ
             {
                 if (s_ctx != null)
                 {
-                    s_ctx.Terminate(block);
-                    s_ctx = null;
+                    try
+                    {
+                        s_ctx.Terminate(block);
+                    }
+                    finally
+                    {
+                        s_ctx = null;
+                    }
                 }
             }
         }
