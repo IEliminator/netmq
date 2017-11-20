@@ -324,9 +324,6 @@ namespace NetMQ.Core
                 case CommandType.ForceStop:
                     ProcessForceStop();
                     break;
-
-                default:
-                    throw new ArgumentException();
             }
         }
 
