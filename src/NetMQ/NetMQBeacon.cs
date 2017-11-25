@@ -58,86 +58,100 @@ namespace NetMQ
 
             private void Configure([NotNull] string interfaceName, int port)
             {
-                // In case the beacon was configured twice
-                if (m_udpSocket != null)
+                try
                 {
-                    m_poller.Remove(m_udpSocket);
+                    // In case the beacon was configured twice
+                    if (m_udpSocket != null)
+                    {
+                        m_poller.Remove(m_udpSocket);
 
 #if NET35
                     m_udpSocket.Close();
 #else
-                    m_udpSocket.Dispose();
+                        m_udpSocket.Dispose();
 #endif
-                }
+                    }
 
-                m_udpPort = port;
-                m_udpSocket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+                    m_udpPort = port;
+                    m_udpSocket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
 
-                m_poller.Add(m_udpSocket, OnUdpReady);
+                    m_poller.Add(m_udpSocket, OnUdpReady);
 
-                // Ask operating system for broadcast permissions on socket
-                m_udpSocket.EnableBroadcast = true;
+                    // Ask operating system for broadcast permissions on socket
+                    m_udpSocket.EnableBroadcast = true;
 
-                // Allow multiple owners to bind to socket; incoming
-                // messages will replicate to each owner
-                m_udpSocket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+                    // Allow multiple owners to bind to socket; incoming
+                    // messages will replicate to each owner
+                    m_udpSocket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
 
-                IPAddress bindTo = null;
-                IPAddress sendTo = null;
+                    IPAddress bindTo = null;
+                    IPAddress sendTo = null;
 
-                if (interfaceName == "*")
-                {
-                    bindTo = IPAddress.Any;
-                    sendTo = IPAddress.Broadcast;
-                }
-                else if (interfaceName == "loopback")
-                {
-                    bindTo = IPAddress.Loopback;
-                    sendTo = IPAddress.Broadcast;
-                }
-                else
-                {
-                    var interfaceCollection = new InterfaceCollection();
-
-                    var interfaceAddress = !string.IsNullOrEmpty(interfaceName)
-                        ? IPAddress.Parse(interfaceName)
-                        : null;
-
-                    foreach (var @interface in interfaceCollection)
+                    if (interfaceName == "*")
                     {
-                        if (interfaceAddress == null || @interface.Address.Equals(interfaceAddress))
+                        bindTo = IPAddress.Any;
+                        sendTo = IPAddress.Broadcast;
+                    }
+                    else if (interfaceName == "loopback")
+                    {
+                        bindTo = IPAddress.Loopback;
+                        sendTo = IPAddress.Broadcast;
+                    }
+                    else
+                    {
+                        var interfaceCollection = new InterfaceCollection();
+
+                        var interfaceAddress = !string.IsNullOrEmpty(interfaceName)
+                            ? IPAddress.Parse(interfaceName)
+                            : null;
+
+                        foreach (var @interface in interfaceCollection)
                         {
-							// because windows and unix differ in how they handle broadcast addressing this needs to be platform specific
-							// on windows any interface can recieve broadcast by requesting to enable broadcast on the socket
-							// on linux to recieve broadcast you must bind to the broadcast address specifically
-							//bindTo = @interface.Address;
-							sendTo = @interface.BroadcastAddress;
+                            if (interfaceAddress == null || @interface.Address.Equals(interfaceAddress))
+                            {
+                                // because windows and unix differ in how they handle broadcast addressing this needs to be platform specific
+                                // on windows any interface can recieve broadcast by requesting to enable broadcast on the socket
+                                // on linux to recieve broadcast you must bind to the broadcast address specifically
+                                //bindTo = @interface.Address;
+                                sendTo = @interface.BroadcastAddress;
 #if NET35 || NET40
 							if (Environment.OSVersion.Platform==PlatformID.Unix)
 #else
-							if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
-#endif						
-							{
-								bindTo = @interface.BroadcastAddress;
-							}
-							else
-							{
-								bindTo = @interface.Address;
-							}
-							sendTo = @interface.BroadcastAddress;
+                                if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+#endif
+                                {
+                                    bindTo = @interface.BroadcastAddress;
+                                }
+                                else
+                                {
+                                    bindTo = @interface.Address;
+                                }
+                                sendTo = @interface.BroadcastAddress;
 
-                            break;
+                                break;
+                            }
                         }
                     }
-                }
 
-                if (bindTo != null)
+                    if (bindTo != null)
+                    {
+                        try
+                        {
+                            m_broadcastAddress = new IPEndPoint(sendTo, m_udpPort);
+                            m_udpSocket.Bind(new IPEndPoint(bindTo, m_udpPort));
+                        }
+                        catch (Exception)
+                        {
+                            bindTo = null;
+                        }
+                    }
+
+                    m_pipe.SendFrame(bindTo?.ToString() ?? "");
+                }
+                catch (SocketException)
                 {
-                    m_broadcastAddress = new IPEndPoint(sendTo, m_udpPort);
-                    m_udpSocket.Bind(new IPEndPoint(bindTo, m_udpPort));
+                    m_pipe.SendFrame("");
                 }
-
-                m_pipe.SendFrame(bindTo?.ToString() ?? "");
             }
 
             private static bool Compare([NotNull] NetMQFrame a, [NotNull] NetMQFrame b, int size)
@@ -351,6 +365,40 @@ namespace NetMQ
         /// <summary>
         /// Configure beacon for the specified port on all interfaces.
         /// </summary>
+        /// <remarks>Blocks until the bind operation completes or Timeout.</remarks>
+        /// <param name="timeout">How long to wait for the requested configuration</param>
+        /// <param name="port">The UDP port to bind to.</param>
+        public bool TryConfigureAllInterfaces(TimeSpan timeout, int port)
+        {
+            return TryConfigure(timeout, port, "*");
+        }
+
+        /// <summary>
+        /// Configure beacon for the specified port and, optionally, to a specific interface.
+        /// </summary>
+        /// <remarks>Blocks until the bind operation completes or timeout</remarks>
+        /// <param name="timeout">How long to wait for the requested configuration</param>
+        /// <param name="port">The UDP port to bind to.</param>
+        /// <param name="interfaceName">IP address of the interface to bind to. Pass empty string (the default value) to use the default interface.</param>
+        public bool TryConfigure(TimeSpan timeout, int port, [NotNull] string interfaceName = "")
+        {
+            try
+            {
+                var message = new NetMQMessage();
+                message.Append(ConfigureCommand);
+                message.Append(interfaceName);
+                message.Append(port);
+
+                m_actor.SendMultipartMessage(message);
+                return m_actor.TryReceiveFrameString(timeout, out m_boundTo) && !string.IsNullOrWhiteSpace(m_boundTo);
+            }
+            catch (Exception) { return false; }
+            finally { m_hostName = null; }
+        }
+
+        /// <summary>
+        /// Configure beacon for the specified port on all interfaces.
+        /// </summary>
         /// <remarks>Blocks until the bind operation completes.</remarks>
         /// <param name="port">The UDP port to bind to.</param>
         public void ConfigureAllInterfaces(int port)
@@ -366,15 +414,21 @@ namespace NetMQ
         /// <param name="interfaceName">IP address of the interface to bind to. Pass empty string (the default value) to use the default interface.</param>
         public void Configure(int port, [NotNull] string interfaceName = "")
         {
-            var message = new NetMQMessage();
-            message.Append(ConfigureCommand);
-            message.Append(interfaceName);
-            message.Append(port);
+            try
+            {
+                var message = new NetMQMessage();
+                message.Append(ConfigureCommand);
+                message.Append(interfaceName);
+                message.Append(port);
 
-            m_actor.SendMultipartMessage(message);
+                m_actor.SendMultipartMessage(message);
 
-            m_boundTo = m_actor.ReceiveFrameString();
-            m_hostName = null;
+                m_boundTo = m_actor.ReceiveFrameString();
+            }
+            finally
+            {
+                m_hostName = null;
+            }
         }
 
         /// <summary>
